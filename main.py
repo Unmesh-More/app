@@ -9,6 +9,8 @@ from kivy.clock import Clock
 from plyer import gps
 import sqlite3
 import os
+from weather import fetch_weather_by_coords, init_weather_cache, wind_advice
+from kivy.uix.textinput import TextInput
 
 
 # ─── DATABASE SETUP ────────────────────────────────────────
@@ -318,14 +320,111 @@ class SpotsScreen(Screen):
 class WeatherScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=20)
-        layout.add_widget(Label(text='🌤️ Weather\n\nComing in Phase 4!',
-                                font_size='22sp', halign='center'))
-        back_btn = Button(text='⬅ Back', size_hint=(1, 0.15),
+        init_weather_cache()
+
+        layout = BoxLayout(orientation='vertical', padding=15, spacing=10)
+
+        # Top bar
+        top_bar = BoxLayout(size_hint=(1, 0.08), spacing=10)
+        back_btn = Button(text='⬅ Back', size_hint=(0.3, 1),
                           background_color=(0.2, 0.2, 0.2, 1))
         back_btn.bind(on_press=lambda x: setattr(self.manager, 'current', 'home'))
-        layout.add_widget(back_btn)
+        top_bar.add_widget(back_btn)
+        top_bar.add_widget(Label(text='🌤️ Weather', font_size='20sp', bold=True))
+        layout.add_widget(top_bar)
+
+        # GPS status
+        self.gps_status = Label(
+            text=self.get_gps_text(),
+            font_size='15sp',
+            size_hint=(1, 0.08),
+            color=(0.4, 0.9, 0.4, 1)
+        )
+        layout.add_widget(self.gps_status)
+
+        # Big fetch button
+        fetch_btn = Button(
+            text='📡 Get Weather at My Location',
+            font_size='20sp',
+            size_hint=(1, 0.13),
+            background_color=(0.1, 0.5, 0.9, 1)
+        )
+        fetch_btn.bind(on_press=self.load_weather)
+        layout.add_widget(fetch_btn)
+
+        # Weather display
+        self.weather_label = Label(
+            text='Tap the button above\nto get weather at your location!',
+            font_size='17sp',
+            halign='center',
+            valign='middle',
+            size_hint=(1, 0.60)
+        )
+        self.weather_label.bind(size=self.weather_label.setter('text_size'))
+        layout.add_widget(self.weather_label)
+
+        # Status bar
+        self.status_label = Label(
+            text='',
+            font_size='13sp',
+            size_hint=(1, 0.07),
+            color=(0.5, 0.9, 0.5, 1)
+        )
+        layout.add_widget(self.status_label)
+
         self.add_widget(layout)
+
+    def get_gps_text(self):
+        if gps_manager.lat:
+            return f'📍 GPS: {gps_manager.lat:.4f}°, {gps_manager.lon:.4f}°'
+        return '📡 GPS: Searching...'
+
+    def on_enter(self):
+        # Refresh GPS status every time screen opens
+        self.gps_status.text = self.get_gps_text()
+
+    def load_weather(self, btn):
+        # Refresh GPS label
+        self.gps_status.text = self.get_gps_text()
+
+        if not gps_manager.lat:
+            self.weather_label.text = (
+                '⚠️ GPS not found yet!\n\n'
+                'Please go to Map screen first\n'
+                'and wait for GPS signal.'
+            )
+            return
+
+        self.weather_label.text = '⏳ Fetching weather...'
+        data, is_live, fetched_at = fetch_weather_by_coords(
+            gps_manager.lat, gps_manager.lon
+        )
+
+        if data:
+            advice = wind_advice(data['wind_speed'])
+            source = '🟢 Live data' if is_live else '🔴 Offline cache'
+            self.weather_label.text = (
+                f'📍 {data["city"]}, {data["country"]}\n\n'
+                f'🌡️  Temp:        {data["temperature"]}°C  '
+                f'(Feels {data["feels_like"]}°C)\n'
+                f'🌤️  Condition:  {data["description"]}\n'
+                f'💧 Humidity:   {data["humidity"]}%\n'
+                f'💨 Wind:        {data["wind_speed"]} km/h '
+                f'{data["wind_dir"]}\n'
+                f'🌧️  Rain:        {data["rain_1h"]} mm/hr\n'
+                f'🌅 Sunrise:    {data["sunrise"]}\n'
+                f'🌇 Sunset:     {data["sunset"]}\n\n'
+                f'{advice}'
+            )
+            self.status_label.text = f'{source}  |  {fetched_at}'
+        else:
+            self.weather_label.text = (
+                '❌ No weather data available.\n\n'
+                'Connect to internet once\n'
+                'to cache weather for offline use.'
+            )
+            self.status_label.text = ''
+
 
 class DownloadScreen(Screen):
     def __init__(self, **kwargs):
