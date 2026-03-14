@@ -1,11 +1,21 @@
 pipeline {
     agent any
     stages{
+        stage('cloning'){
+            step {
+                git branch: 'main',
+                url: 'https://github.com/Unmesh-More/app.git'
+            } 
+        }
         stage('running kivy_env'){
-            sh 'kivy_env\Scripts\activate'
+            step {
+                sh 'kivy_env\Scripts\activate'
+            }
         }
         stage('new'){
-            bat 'python main.py'
+            step{
+                bat 'python main.py'
+            }
         }
     }
 }
