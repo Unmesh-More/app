@@ -1,0 +1,2 @@
+to start the virtual env use >> kivy_env\Scripts\activate
+then run py main.py
