@@ -39,7 +39,7 @@ pipeline {
                     }
                     stage('directly using python'){
                         steps {
-                            bat 'python main.py'
+                            echo 'python main.py will not work'
                         }
                     }
                 }
