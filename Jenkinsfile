@@ -24,16 +24,25 @@ pipeline {
                 bat 'kivy_env\\Scripts\\pip install -r requirements.txt'
             }
         }
-        stage('Run Kivy App') {
-            parallel{
-                steps {
-                    bat 'kivy_env\\Scripts\\python main.py'
-                }
-                steps{
-                    echo 'this is running parallelly'
-                }
-                steps {
-                    bat 'python main.py'
+        stages{
+
+            stage('Run Kivy App') {
+                parallel{
+                    stage('running python on kivy env'){
+                        steps {
+                            bat 'kivy_env\\Scripts\\python main.py'
+                        }
+                    }
+                    stage('Parallel'){
+                        steps{
+                            echo 'this is parallelly running'
+                        }
+                    }
+                    stage('directly using python'){
+                        steps {
+                            bat 'python main.py'
+                        }
+                    }
                 }
             }
         }
