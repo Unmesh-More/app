@@ -24,8 +24,7 @@ pipeline {
                 bat 'kivy_env\\Scripts\\pip install -r requirements.txt'
             }
         }
-        stages{
-
+        
             stage('Run Kivy App') {
                 parallel{
                     stage('running python on kivy env'){
@@ -44,7 +43,7 @@ pipeline {
                         }
                     }
                 }
-            }
+            
         }
     }
 }
