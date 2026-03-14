@@ -25,8 +25,16 @@ pipeline {
             }
         }
         stage('Run Kivy App') {
-            steps {
-                bat 'kivy_env\\Scripts\\python main.py'
+            parallel{
+                steps {
+                    bat 'kivy_env\\Scripts\\python main.py'
+                }
+                steps{
+                    echo 'this is running parallelly'
+                }
+                steps {
+                    bat 'python main.py'
+                }
             }
         }
     }
