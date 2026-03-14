@@ -5,7 +5,7 @@ pipeline {
             sh 'kivy_env\Scripts\activate'
         }
         stage('new'){
-            sh 'python main.py'
+            bat 'python main.py'
         }
     }
 }
