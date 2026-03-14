@@ -45,5 +45,10 @@ pipeline {
                 }
             
         }
+        stage('Done') {
+            steps{
+                echo 'Something reached'
+            }
+        }
     }
 }
