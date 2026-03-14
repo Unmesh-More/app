@@ -3,6 +3,111 @@ from kivy.uix.boxlayout import BoxLayout
 from kivy.uix.button import Button
 from kivy.uix.label import Label
 from kivy.uix.screenmanager import ScreenManager, Screen
+from kivy.uix.scrollview import ScrollView
+from kivy.uix.gridlayout import GridLayout
+from kivy.clock import Clock
+from plyer import gps
+import sqlite3
+import os
+
+
+# ─── DATABASE SETUP ────────────────────────────────────────
+DB_PATH = os.path.join(os.path.dirname(__file__), 'fishnav.db')
+
+def init_db():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS spots (
+            id      INTEGER PRIMARY KEY AUTOINCREMENT,
+            name    TEXT,
+            lat     REAL,
+            lon     REAL,
+            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    c.execute('''
+        CREATE TABLE IF NOT EXISTS routes (
+            id       INTEGER PRIMARY KEY AUTOINCREMENT,
+            lat      REAL,
+            lon      REAL,
+            saved_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    conn.commit()
+    conn.close()
+
+def save_spot_to_db(name, lat, lon):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO spots (name, lat, lon) VALUES (?, ?, ?)',
+              (name, lat, lon))
+    conn.commit()
+    conn.close()
+
+def get_all_spots():
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('SELECT name, lat, lon, saved_at FROM spots ORDER BY id DESC')
+    rows = c.fetchall()
+    conn.close()
+    return rows
+
+def save_route_point(lat, lon):
+    conn = sqlite3.connect(DB_PATH)
+    c = conn.cursor()
+    c.execute('INSERT INTO routes (lat, lon) VALUES (?, ?)', (lat, lon))
+    conn.commit()
+    conn.close()
+
+
+# ─── GPS MANAGER ───────────────────────────────────────────
+class GPSManager:
+    def __init__(self):
+        self.lat = None
+        self.lon = None
+        self.status = 'Searching GPS...'
+        self.on_location_callback = None
+
+    def start(self):
+        try:
+            gps.configure(on_location=self.on_location,
+                          on_status=self.on_status)
+            gps.start(minTime=1000, minDistance=1)
+        except Exception:
+            # On Windows/PC, GPS is not available — use simulation
+            self.status = 'Simulated GPS (PC mode)'
+            self.lat = 12.9716   # Mangalore coast default
+            self.lon = 74.8631
+            Clock.schedule_interval(self.simulate_gps, 3)
+
+    def simulate_gps(self, dt):
+        # Slightly move position to simulate boat movement
+        if self.lat:
+            self.lat += 0.0001
+            self.lon += 0.0001
+            self.status = f'Simulated GPS active'
+            if self.on_location_callback:
+                self.on_location_callback(self.lat, self.lon)
+
+    def on_location(self, **kwargs):
+        self.lat = kwargs.get('lat')
+        self.lon = kwargs.get('lon')
+        self.status = 'GPS Fixed ✅'
+        if self.on_location_callback:
+            self.on_location_callback(self.lat, self.lon)
+
+    def on_status(self, stype, status):
+        self.status = status
+
+    def stop(self):
+        try:
+            gps.stop()
+        except Exception:
+            pass
+
+
+gps_manager = GPSManager()
 
 
 # ─── HOME SCREEN ───────────────────────────────────────────
@@ -55,84 +160,166 @@ class HomeScreen(Screen):
 class MapScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
+        self.tracking = False
+        self.spot_count = 0
+
         layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
 
         # Top bar
         top_bar = BoxLayout(size_hint=(1, 0.08), spacing=10)
-        back_btn = Button(
-            text='⬅ Back',
-            size_hint=(0.3, 1),
-            background_color=(0.2, 0.2, 0.2, 1)
-        )
+        back_btn = Button(text='⬅ Back', size_hint=(0.3, 1),
+                          background_color=(0.2, 0.2, 0.2, 1))
         back_btn.bind(on_press=self.go_back)
-        title = Label(text='🗺️  Map', font_size='20sp', bold=True)
         top_bar.add_widget(back_btn)
-        top_bar.add_widget(title)
+        top_bar.add_widget(Label(text='🗺️  Map', font_size='20sp', bold=True))
         layout.add_widget(top_bar)
 
-        # Map placeholder (real map coming next step)
+        # GPS status bar
+        self.gps_label = Label(
+            text='📡 ' + gps_manager.status,
+            font_size='15sp',
+            size_hint=(1, 0.07),
+            color=(0.2, 0.9, 0.4, 1)
+        )
+        layout.add_widget(self.gps_label)
+
+        # Map display area
         self.map_area = Label(
-            text='📡 Map loads here\n\n(GPS: searching...)',
-            font_size='18sp',
+            text='Waiting for GPS...',
+            font_size='17sp',
             halign='center',
-            size_hint=(1, 0.75),
-            color=(0.2, 0.8, 0.4, 1)
+            valign='middle',
+            size_hint=(1, 0.70)
         )
         layout.add_widget(self.map_area)
 
-        # Bottom action buttons
+        # Bottom buttons
         bottom_bar = BoxLayout(size_hint=(1, 0.12), spacing=10)
-        save_btn = Button(
+        self.save_btn = Button(
             text='📍 Save Spot',
             font_size='18sp',
             background_color=(0.1, 0.6, 0.9, 1)
         )
-        track_btn = Button(
-            text='🔴 Track Route',
+        self.track_btn = Button(
+            text='🔴 Start Track',
             font_size='18sp',
             background_color=(0.8, 0.2, 0.2, 1)
         )
-        save_btn.bind(on_press=self.save_spot)
-        track_btn.bind(on_press=self.toggle_tracking)
-        bottom_bar.add_widget(save_btn)
-        bottom_bar.add_widget(track_btn)
+        self.save_btn.bind(on_press=self.save_spot)
+        self.track_btn.bind(on_press=self.toggle_tracking)
+        bottom_bar.add_widget(self.save_btn)
+        bottom_bar.add_widget(self.track_btn)
         layout.add_widget(bottom_bar)
 
         self.add_widget(layout)
-        self.tracking = False
 
-    def go_back(self, btn):
-        self.manager.current = 'home'
+        # Start GPS and update UI
+        gps_manager.on_location_callback = self.update_gps_display
+        gps_manager.start()
+        Clock.schedule_interval(self.refresh_gps_status, 2)
+
+    def refresh_gps_status(self, dt):
+        self.gps_label.text = '📡 ' + gps_manager.status
+        if gps_manager.lat:
+            self.update_gps_display(gps_manager.lat, gps_manager.lon)
+
+    def update_gps_display(self, lat, lon):
+        self.map_area.text = (
+            f'📍 Current Position\n\n'
+            f'Latitude:   {lat:.6f}°\n'
+            f'Longitude:  {lon:.6f}°\n\n'
+            f'Spots saved this session: {self.spot_count}'
+        )
 
     def save_spot(self, btn):
-        self.map_area.text = '📍 Spot Saved!\n\nLat: 12.9716\nLon: 74.8631'
+        if gps_manager.lat:
+            self.spot_count += 1
+            name = f'Spot {self.spot_count}'
+            save_spot_to_db(name, gps_manager.lat, gps_manager.lon)
+            self.map_area.text = (
+                f'✅ {name} Saved!\n\n'
+                f'Lat: {gps_manager.lat:.6f}°\n'
+                f'Lon: {gps_manager.lon:.6f}°\n\n'
+                f'Total spots: {self.spot_count}'
+            )
+        else:
+            self.map_area.text = '⚠️ No GPS signal yet!\nPlease wait...'
 
     def toggle_tracking(self, btn):
         self.tracking = not self.tracking
         if self.tracking:
-            self.map_area.text = '🔴 Tracking route...\n\nMove the boat!'
+            self.track_btn.text = '⏹️ Stop Track'
+            self.track_btn.background_color = (0.3, 0.3, 0.3, 1)
+            Clock.schedule_interval(self.record_route_point, 5)
         else:
-            self.map_area.text = '⏹️ Route stopped\n\nRoute saved!'
+            self.track_btn.text = '🔴 Start Track'
+            self.track_btn.background_color = (0.8, 0.2, 0.2, 1)
+            Clock.unschedule(self.record_route_point)
+            self.map_area.text = '⏹️ Route saved!\n\nCheck My Spots screen.'
+
+    def record_route_point(self, dt):
+        if gps_manager.lat:
+            save_route_point(gps_manager.lat, gps_manager.lon)
+
+    def go_back(self, btn):
+        self.manager.current = 'home'
 
 
-# ─── PLACEHOLDER SCREENS ───────────────────────────────────
+# ─── MY SPOTS SCREEN ───────────────────────────────────────
 class SpotsScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
-        layout = BoxLayout(orientation='vertical', padding=20)
-        layout.add_widget(Label(text='📍 My Spots\n\nComing soon!',
-                                font_size='22sp', halign='center'))
-        back_btn = Button(text='⬅ Back', size_hint=(1, 0.15),
+        self.layout = BoxLayout(orientation='vertical', padding=10, spacing=10)
+
+        # Top bar
+        top_bar = BoxLayout(size_hint=(1, 0.08), spacing=10)
+        back_btn = Button(text='⬅ Back', size_hint=(0.3, 1),
                           background_color=(0.2, 0.2, 0.2, 1))
         back_btn.bind(on_press=lambda x: setattr(self.manager, 'current', 'home'))
-        layout.add_widget(back_btn)
-        self.add_widget(layout)
+        top_bar.add_widget(back_btn)
+        top_bar.add_widget(Label(text='📍 My Spots', font_size='20sp', bold=True))
+        self.layout.add_widget(top_bar)
 
+        # Scrollable spots list
+        self.scroll = ScrollView(size_hint=(1, 0.92))
+        self.spots_grid = GridLayout(cols=1, spacing=8, size_hint_y=None)
+        self.spots_grid.bind(minimum_height=self.spots_grid.setter('height'))
+        self.scroll.add_widget(self.spots_grid)
+        self.layout.add_widget(self.scroll)
+
+        self.add_widget(self.layout)
+
+    def on_enter(self):
+        # Refresh spots every time screen is opened
+        self.spots_grid.clear_widgets()
+        spots = get_all_spots()
+        if not spots:
+            self.spots_grid.add_widget(Label(
+                text='No spots saved yet!\nGo to Map and save some. 🐟',
+                font_size='18sp',
+                halign='center',
+                size_hint_y=None,
+                height=100
+            ))
+        for name, lat, lon, saved_at in spots:
+            text = f'📍 {name}\nLat: {lat:.5f}  Lon: {lon:.5f}\n🕒 {saved_at[:16]}'
+            lbl = Button(
+                text=text,
+                font_size='15sp',
+                halign='left',
+                size_hint_y=None,
+                height=90,
+                background_color=(0.1, 0.3, 0.6, 1)
+            )
+            self.spots_grid.add_widget(lbl)
+
+
+# ─── PLACEHOLDER SCREENS ───────────────────────────────────
 class WeatherScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         layout = BoxLayout(orientation='vertical', padding=20)
-        layout.add_widget(Label(text='🌤️ Weather\n\nComing soon!',
+        layout.add_widget(Label(text='🌤️ Weather\n\nComing in Phase 4!',
                                 font_size='22sp', halign='center'))
         back_btn = Button(text='⬅ Back', size_hint=(1, 0.15),
                           background_color=(0.2, 0.2, 0.2, 1))
@@ -144,7 +331,7 @@ class DownloadScreen(Screen):
     def __init__(self, **kwargs):
         super().__init__(**kwargs)
         layout = BoxLayout(orientation='vertical', padding=20)
-        layout.add_widget(Label(text='⬇️ Download Maps\n\nComing soon!',
+        layout.add_widget(Label(text='⬇️ Download Maps\n\nComing in Phase 5!',
                                 font_size='22sp', halign='center'))
         back_btn = Button(text='⬅ Back', size_hint=(1, 0.15),
                           background_color=(0.2, 0.2, 0.2, 1))
@@ -156,6 +343,10 @@ class DownloadScreen(Screen):
 # ─── APP ENTRY POINT ───────────────────────────────────────
 class FishNavApp(App):
     def build(self):
+        init_db()
+        return self.build_screens()
+
+    def build_screens(self):
         sm = ScreenManager()
         sm.add_widget(HomeScreen(name='home'))
         sm.add_widget(MapScreen(name='map'))
